@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../core/database/database_helper.dart';
 import '../../core/theme/app_theme.dart';
 
 class ForgeOpsChatScreen extends StatefulWidget {
@@ -16,35 +17,201 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
     _ChatMessage(
       isAI: true,
       text:
-          "ForgeOps AI online.\n\nI have live access to your floor data: attendance, inventory, machines, work orders, alerts, and payroll.\n\nWhat do you need?",
+          'ForgeOps AI online.\n\nI have live access to your floor data: attendance, inventory, machines, work orders, alerts, and payroll.\n\nWhat do you need?',
       time: DateTime.now().subtract(const Duration(seconds: 5)),
     ),
   ];
   bool _thinking = false;
 
   final List<String> _quickPrompts = [
-    'What\'s the floor status right now?',
-    'Any low stock items?',
+    'Floor status right now?',
+    'Low stock items?',
     'Machines needing maintenance?',
-    'Open work orders today?',
-    'Attendance summary for today?',
-    'Show critical alerts',
+    'Open work orders?',
+    'Attendance today?',
+    'Active alerts?',
+    'Payroll this month?',
   ];
 
-  final Map<String, String> _responses = {
-    'floor':
-        '**Floor Status — Right Now:**\n• 🟢 6/8 machines running\n• 👷 14/16 workers present\n• 📋 3 active work orders\n• ⚠️ 2 unresolved alerts\n\nEverything is within normal parameters. Machine CNC-03 is idle — unscheduled stop at 10:22 AM.',
-    'stock':
-        '**Low Stock Alert:**\n• Copper Nozzle (1.5mm) — 4 pcs left (reorder: 10)\n• Lens Cover Glass — 2 pcs (reorder: 5)\n• N₂ Cylinders — 1 EMPTY at Station A\n\nFlagging this: Copper Nozzle at critical level. Raise PO immediately.',
-    'maintenance':
-        '**Machines Due for Maintenance:**\n• CNC-03 — overdue by 12 days\n• Laser #1 — due in 3 days\n\nCNC-03 is a production risk. Schedule maintenance today.',
-    'work order':
-        '**Open Work Orders:**\n• WO-1041 — HIGH — SS cutting batch (In Progress)\n• WO-1042 — MEDIUM — Mild steel plates (Pending)\n• WO-1043 — HIGH — Client delivery deadline: today\n\nWO-1043 has a today deadline. Assign to Team B immediately.',
-    'attendance':
-        '**Attendance Today:**\n• Present: 14/16\n• Absent: Ravi Kumar (no reason filed), Priya Nair (approved leave)\n• Late arrivals: 2 workers, 18 mins avg delay\n\nAll shifts covered.',
-    'alert':
-        '**Active Alerts:**\n• 🔴 CRITICAL: Copper Nozzle stock below minimum\n• 🟡 WARNING: CNC-03 maintenance overdue\n• 🟡 WARNING: WO-1043 deadline today\n\n3 alerts require action today.',
-  };
+  Future<String> _queryLiveData(String userText) async {
+    final db = await DatabaseHelper.instance.database;
+    final lower = userText.toLowerCase();
+    final today = DateTime.now().toString().substring(0, 10);
+    final month = DateTime.now().toString().substring(0, 7);
+
+    // ─── FLOOR STATUS ─────────────────────────────────────────────────
+    if (lower.contains('floor') ||
+        lower.contains('status') ||
+        lower.contains('overview')) {
+      final present = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM attendance WHERE date=? AND status='PRESENT'",
+        [today],
+      )).first['c'];
+      final totalEmp = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM employees WHERE is_active=1",
+      )).first['c'];
+      final running = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM machines WHERE status='RUNNING'",
+      )).first['c'];
+      final totalMac = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM machines",
+      )).first['c'];
+      final woOpen = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM work_orders WHERE status IN ('PENDING','IN_PROGRESS')",
+      )).first['c'];
+      final alerts = (await db.rawQuery(
+        "SELECT COUNT(*) as c FROM alerts WHERE is_resolved=0",
+      )).first['c'];
+      return 'Floor Status — $today:\n• 👷 Workers: $present / $totalEmp present\n• ⚙️ Machines: $running / $totalMac running\n• 📋 Open Work Orders: $woOpen\n• ⚠️ Unresolved Alerts: $alerts';
+    }
+
+    // ─── LOW STOCK / INVENTORY ─────────────────────────────────────────
+    if (lower.contains('stock') ||
+        lower.contains('inventory') ||
+        lower.contains('item')) {
+      final lowStock = await db.rawQuery(
+        'SELECT name, quantity, reorder_level FROM inventory WHERE quantity <= reorder_level',
+      );
+      if (lowStock.isEmpty) {
+        return 'Inventory: No items below reorder level. All stock levels are adequate.';
+      }
+      final lines = lowStock
+          .map(
+            (r) =>
+                '• ${r['name']} — ${r['quantity']} left (reorder at ${r['reorder_level']})',
+          )
+          .join('\n');
+      return 'Low Stock Alert (${lowStock.length} items):\n$lines\n\nRaise purchase orders immediately.';
+    }
+
+    // ─── MACHINES / MAINTENANCE ────────────────────────────────────────
+    if (lower.contains('machine') ||
+        lower.contains('maintenance') ||
+        lower.contains('service')) {
+      final overdue = await db.rawQuery(
+        "SELECT name, next_service_due, status FROM machines WHERE next_service_due < ? OR status='MAINTENANCE'",
+        [today],
+      );
+      final all = await db.query('machines');
+      final running = all.where((m) => m['status'] == 'RUNNING').length;
+      final idle = all.where((m) => m['status'] == 'IDLE').length;
+      final offline = all.where((m) => m['status'] == 'OFFLINE').length;
+      String resp =
+          'Machines (${all.length} total):\n• Running: $running  Idle: $idle  Offline: $offline\n';
+      if (overdue.isNotEmpty) {
+        resp += '\n⚠️ Maintenance Due / Overdue:\n';
+        resp += overdue
+            .map((m) => '• ${m['name']} — due ${m['next_service_due']}')
+            .join('\n');
+        resp += '\n\nSchedule maintenance now to avoid production halt.';
+      } else {
+        resp += '\n✅ All machines are within service schedule.';
+      }
+      return resp;
+    }
+
+    // ─── WORK ORDERS ───────────────────────────────────────────────────
+    if (lower.contains('work order') ||
+        lower.contains('wo') ||
+        lower.contains('jobs')) {
+      final open = await db.rawQuery(
+        "SELECT wo_number, subject, priority, status FROM work_orders WHERE status IN ('PENDING','IN_PROGRESS') ORDER BY CASE priority WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END",
+      );
+      if (open.isEmpty) {
+        return 'Work Orders: No open work orders. All caught up.';
+      }
+      final lines = open
+          .map(
+            (w) =>
+                '• ${w['wo_number']} [${w['priority']}] — ${w['subject']} (${w['status']})',
+          )
+          .join('\n');
+      return 'Open Work Orders (${open.length}):\n$lines';
+    }
+
+    // ─── ATTENDANCE ────────────────────────────────────────────────────
+    if (lower.contains('attendance') ||
+        lower.contains('present') ||
+        lower.contains('absent')) {
+      final records = await db.rawQuery(
+        '''SELECT e.name, a.status, a.check_in, a.check_out
+           FROM attendance a JOIN employees e ON a.employee_id = e.id
+           WHERE a.date = ? ORDER BY e.name''',
+        [today],
+      );
+      if (records.isEmpty) {
+        return 'Attendance: No records marked yet for today ($today).';
+      }
+      final present = records.where((r) => r['status'] == 'PRESENT').length;
+      final absent = records.where((r) => r['status'] == 'ABSENT').length;
+      final absentNames = records
+          .where((r) => r['status'] == 'ABSENT')
+          .map((r) => r['name'] as String)
+          .join(', ');
+      return 'Attendance — $today:\n• ✅ Present: $present\n• ❌ Absent: $absent${absentNames.isNotEmpty ? ' ($absentNames)' : ''}\n• Total tracked: ${records.length}';
+    }
+
+    // ─── ALERTS ────────────────────────────────────────────────────────
+    if (lower.contains('alert') ||
+        lower.contains('critical') ||
+        lower.contains('warning')) {
+      final alerts = await db.query(
+        'alerts',
+        where: 'is_resolved=0',
+        orderBy: 'triggered_at DESC',
+      );
+      if (alerts.isEmpty) {
+        return 'Alerts: No active alerts. Floor is running clean.';
+      }
+      final lines = alerts
+          .map((a) => '• [${a['severity']}] ${a['message']}')
+          .join('\n');
+      return 'Active Alerts (${alerts.length}):\n$lines\n\nResolve CRITICAL alerts first.';
+    }
+
+    // ─── PAYROLL ─────────────────────────────────────────────────────
+    if (lower.contains('payroll') ||
+        lower.contains('salary') ||
+        lower.contains('pay')) {
+      final records = await db.rawQuery(
+        '''SELECT e.name, p.net_pay, p.paid_days FROM payroll p
+           JOIN employees e ON p.employee_id = e.id
+           WHERE p.month = ?''',
+        [month],
+      );
+      if (records.isEmpty) {
+        return 'Payroll: No payslips generated for $month yet. Use the Generate All button in Payroll screen.';
+      }
+      final total = records.fold<double>(
+        0,
+        (sum, r) => sum + ((r['net_pay'] as num?)?.toDouble() ?? 0),
+      );
+      return 'Payroll — $month (${records.length} employees):\nTotal payout: ₹${total.toStringAsFixed(0)}\n\n${records.map((r) => '• ${r['name']}: ₹${r['net_pay']} (${r['paid_days']} days)').join('\n')}';
+    }
+
+    // ─── EMPLOYEES ────────────────────────────────────────────────────
+    if (lower.contains('employee') ||
+        lower.contains('staff') ||
+        lower.contains('worker')) {
+      final emps = await db.query(
+        'employees',
+        where: 'is_active=1',
+        orderBy: 'name',
+      );
+      return 'Active Employees (${emps.length}):\n${emps.map((e) => '• ${e['name']} — ${e['designation']} (${e['department']})').join('\n')}';
+    }
+
+    // ─── CYLINDERS ────────────────────────────────────────────────────
+    if (lower.contains('cylinder') || lower.contains('gas')) {
+      final cyls = await db.query('cylinders');
+      final empty = cyls.where((c) => c['status'] == 'EMPTY').length;
+      final full = cyls.where((c) => c['status'] == 'FULL').length;
+      final partial = cyls.where((c) => c['status'] == 'PARTIAL').length;
+      return 'Gas Cylinders (${cyls.length} total):\n• Full: $full\n• Partial: $partial\n• Empty: $empty\n${empty > 0 ? '\n⚠️ $empty cylinders need refilling.' : ''}';
+    }
+
+    return "That query isn't in my current data scope. Try asking about: floor status, machines, inventory, work orders, attendance, alerts, payroll, cylinders, or employees.";
+  }
 
   void _handleSend([String? quick]) {
     final text = quick ?? _textCtrl.text.trim();
@@ -59,16 +226,8 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
     });
     _scrollToBottom();
 
-    Future.delayed(const Duration(milliseconds: 1200), () {
+    _queryLiveData(text).then((response) {
       if (!mounted) return;
-      final lower = text.toLowerCase();
-      String response = "That data isn't available in the current dataset.";
-      for (final key in _responses.keys) {
-        if (lower.contains(key)) {
-          response = _responses[key]!;
-          break;
-        }
-      }
       setState(() {
         _messages.add(
           _ChatMessage(isAI: true, text: response, time: DateTime.now()),
@@ -138,7 +297,7 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
                     ),
                     const SizedBox(width: 4),
                     const Text(
-                      'Online',
+                      'Live SQLite',
                       style: TextStyle(fontSize: 11, color: Color(0xFF6EE7B7)),
                     ),
                   ],
@@ -224,7 +383,7 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
                       color: isDark ? Colors.white : const Color(0xFF111827),
                     ),
                     decoration: InputDecoration(
-                      hintText: 'Ask ForgeOps AI...',
+                      hintText: 'Ask about floor, inventory, machines...',
                       hintStyle: const TextStyle(color: Color(0xFF6B7280)),
                       filled: true,
                       fillColor: isDark

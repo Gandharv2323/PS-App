@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import '../../core/database/database_helper.dart';
 import '../../core/theme/app_theme.dart';
 
 class ReportsHubScreen extends StatelessWidget {
@@ -174,106 +178,398 @@ class ReportsHubScreen extends StatelessWidget {
   }
 }
 
-class _GenericReportScreen extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final Color color;
-  const _GenericReportScreen({
-    required this.title,
-    required this.icon,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
-        leading: BackButton(onPressed: () => context.go('/reports')),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 64, color: color.withValues(alpha: 0.5)),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: GoogleFonts.inter(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Report generation coming soon',
-              style: TextStyle(color: Color(0xFF6B7280)),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.picture_as_pdf_outlined),
-              label: const Text('Export PDF'),
-            ),
-            const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.table_chart_outlined),
-              label: const Text('Export CSV'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// ─── Generic Report Screen with Real PDF Export ──────────────────────────────
 
 class AttendanceReportScreen extends StatelessWidget {
   const AttendanceReportScreen({super.key});
   @override
-  Widget build(BuildContext context) => const _GenericReportScreen(
+  Widget build(BuildContext context) => _LiveReportScreen(
     title: 'Attendance Report',
     icon: Icons.people_outline,
     color: AppTheme.primaryBlue,
+    queryType: 'attendance',
   );
 }
 
 class InventoryReportScreen extends StatelessWidget {
   const InventoryReportScreen({super.key});
   @override
-  Widget build(BuildContext context) => const _GenericReportScreen(
+  Widget build(BuildContext context) => _LiveReportScreen(
     title: 'Inventory Report',
     icon: Icons.inventory_2_outlined,
     color: AppTheme.accentOrange,
+    queryType: 'inventory',
   );
 }
 
 class ProductionReportScreen extends StatelessWidget {
   const ProductionReportScreen({super.key});
   @override
-  Widget build(BuildContext context) => const _GenericReportScreen(
+  Widget build(BuildContext context) => _LiveReportScreen(
     title: 'Production Report',
     icon: Icons.precision_manufacturing_outlined,
     color: AppTheme.statusRunning,
+    queryType: 'production',
   );
 }
 
 class FinancialReportScreen extends StatelessWidget {
   const FinancialReportScreen({super.key});
   @override
-  Widget build(BuildContext context) => const _GenericReportScreen(
+  Widget build(BuildContext context) => _LiveReportScreen(
     title: 'Financial Report',
     icon: Icons.account_balance_outlined,
-    color: Color(0xFF7C3AED),
+    color: const Color(0xFF7C3AED),
+    queryType: 'financial',
   );
 }
 
 class WorkOrderReportScreen extends StatelessWidget {
   const WorkOrderReportScreen({super.key});
   @override
-  Widget build(BuildContext context) => const _GenericReportScreen(
+  Widget build(BuildContext context) => _LiveReportScreen(
     title: 'Work Order Report',
     icon: Icons.assignment_outlined,
-    color: Color(0xFF00838F),
+    color: const Color(0xFF00838F),
+    queryType: 'workorders',
   );
+}
+
+// ─── Live Report Screen ───────────────────────────────────────────────────────
+
+class _LiveReportScreen extends StatefulWidget {
+  final String title;
+  final IconData icon;
+  final Color color;
+  final String queryType;
+
+  const _LiveReportScreen({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.queryType,
+  });
+  @override
+  State<_LiveReportScreen> createState() => _LiveReportScreenState();
+}
+
+class _LiveReportScreenState extends State<_LiveReportScreen> {
+  List<Map<String, dynamic>> _data = [];
+  List<String> _columns = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final db = await DatabaseHelper.instance.database;
+    final month = DateTime.now().toString().substring(0, 7);
+
+    List<Map<String, dynamic>> rows = [];
+    List<String> cols = [];
+
+    switch (widget.queryType) {
+      case 'attendance':
+        rows = await db.rawQuery(
+          '''SELECT e.name as "Employee", e.department as "Dept",
+             a.date as "Date", a.status as "Status",
+             COALESCE(a.check_in, '-') as "Check In",
+             COALESCE(a.check_out, '-') as "Check Out"
+             FROM attendance a JOIN employees e ON a.employee_id = e.id
+             WHERE a.date >= date('now', '-30 days')
+             ORDER BY a.date DESC, e.name''',
+        );
+        cols = ['Employee', 'Dept', 'Date', 'Status', 'Check In', 'Check Out'];
+        break;
+      case 'inventory':
+        rows = await db.rawQuery(
+          '''SELECT name as "Item", category as "Category",
+             quantity as "Qty", unit as "Unit",
+             reorder_level as "Reorder",
+             CASE WHEN quantity <= reorder_level THEN 'LOW STOCK' ELSE 'OK' END as "Status",
+             last_updated as "Last Updated"
+             FROM inventory ORDER BY quantity ASC''',
+        );
+        cols = ['Item', 'Category', 'Qty', 'Unit', 'Reorder', 'Status'];
+        break;
+      case 'production':
+        rows = await db.rawQuery(
+          '''SELECT wo_number as "WO #", subject as "Subject",
+             priority as "Priority", status as "Status", deadline as "Deadline"
+             FROM work_orders ORDER BY created_at DESC''',
+        );
+        cols = ['WO #', 'Subject', 'Priority', 'Status', 'Deadline'];
+        break;
+      case 'financial':
+        rows = await db.rawQuery(
+          '''SELECT e.name as "Employee", p.month as "Month",
+             p.base_salary as "Base (₹)", p.paid_days as "Days",
+             COALESCE(p.overtime_pay, 0) as "OT (₹)",
+             COALESCE(p.deductions, 0) as "Deduct (₹)",
+             p.net_pay as "Net Pay (₹)"
+             FROM payroll p JOIN employees e ON p.employee_id = e.id
+             WHERE p.month = ? ORDER BY e.name''',
+          [month],
+        );
+        cols = [
+          'Employee',
+          'Month',
+          'Base (₹)',
+          'Days',
+          'OT (₹)',
+          'Deduct (₹)',
+          'Net Pay (₹)',
+        ];
+        break;
+      case 'workorders':
+        rows = await db.rawQuery(
+          '''SELECT wo_number as "WO #", subject as "Subject",
+             priority as "Priority", status as "Status",
+             deadline as "Deadline", created_at as "Created"
+             FROM work_orders ORDER BY created_at DESC''',
+        );
+        cols = ['WO #', 'Subject', 'Priority', 'Status', 'Deadline'];
+        break;
+    }
+
+    if (mounted) {
+      setState(() {
+        _data = rows;
+        _columns = cols;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _exportPdf() async {
+    final pdf = pw.Document();
+    final now = DateTime.now().toString().substring(0, 16);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(24),
+        build: (ctx) => [
+          pw.Header(
+            level: 0,
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  widget.title,
+                  style: pw.TextStyle(
+                    fontSize: 20,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.Text(
+                  'PS Laser — $now',
+                  style: const pw.TextStyle(fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 12),
+          if (_data.isEmpty)
+            pw.Text('No data available for this report.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: _columns,
+              data: _data
+                  .map(
+                    (row) =>
+                        _columns.map((col) => '${row[col] ?? '-'}').toList(),
+                  )
+                  .toList(),
+              headerStyle: pw.TextStyle(
+                fontWeight: pw.FontWeight.bold,
+                fontSize: 9,
+              ),
+              cellStyle: const pw.TextStyle(fontSize: 8),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColors.blue800,
+              ),
+              headerAlignments: {
+                for (var col in _columns)
+                  _columns.indexOf(col): pw.Alignment.centerLeft,
+              },
+              cellAlignments: {
+                for (var i = 0; i < _columns.length; i++)
+                  i: pw.Alignment.centerLeft,
+              },
+              border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),
+              oddRowDecoration: const pw.BoxDecoration(
+                color: PdfColors.grey100,
+              ),
+            ),
+          pw.SizedBox(height: 12),
+          pw.Text(
+            'Total records: ${_data.length}',
+            style: const pw.TextStyle(fontSize: 9),
+          ),
+        ],
+      ),
+    );
+
+    await Printing.layoutPdf(onLayout: (_) => pdf.save());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        leading: BackButton(onPressed: () => context.go('/reports')),
+        actions: [
+          if (!_loading) ...[
+            IconButton(
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              tooltip: 'Export PDF',
+              onPressed: _exportPdf,
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                setState(() => _loading = true);
+                _load();
+              },
+            ),
+          ],
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                // Summary bar
+                Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: widget.color.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: widget.color.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(widget.icon, color: widget.color, size: 28),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${_data.length} records',
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: widget.color,
+                            ),
+                          ),
+                          Text(
+                            'Tap PDF to export full report',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              color: const Color(0xFF6B7280),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      ElevatedButton.icon(
+                        onPressed: _exportPdf,
+                        icon: const Icon(
+                          Icons.picture_as_pdf_outlined,
+                          size: 16,
+                        ),
+                        label: const Text('Export PDF'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: widget.color,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Data table
+                Expanded(
+                  child: _data.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                widget.icon,
+                                size: 64,
+                                color: widget.color.withValues(alpha: 0.3),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                'No data available',
+                                style: GoogleFonts.inter(
+                                  fontSize: 16,
+                                  color: const Color(0xFF6B7280),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: SingleChildScrollView(
+                            child: DataTable(
+                              columnSpacing: 16,
+                              headingRowColor: WidgetStateProperty.all(
+                                isDark
+                                    ? AppTheme.darkCard
+                                    : const Color(0xFFF3F4F6),
+                              ),
+                              columns: _columns
+                                  .map(
+                                    (c) => DataColumn(
+                                      label: Text(
+                                        c,
+                                        style: GoogleFonts.inter(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                              rows: _data
+                                  .map(
+                                    (row) => DataRow(
+                                      cells: _columns
+                                          .map(
+                                            (col) => DataCell(
+                                              Text(
+                                                '${row[col] ?? '-'}',
+                                                style: GoogleFonts.inter(
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
 }
