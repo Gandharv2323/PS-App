@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -365,10 +366,20 @@ class WorkOrderDetailScreen extends StatefulWidget {
 
 class _WorkOrderDetailScreenState extends State<WorkOrderDetailScreen> {
   Map<String, dynamic>? _order;
+  Timer? _ticker;
+  Duration _elapsed = Duration.zero;
+  bool _timerRunning = false;
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -378,7 +389,82 @@ class _WorkOrderDetailScreenState extends State<WorkOrderDetailScreen> {
       where: 'id=?',
       whereArgs: [widget.workOrderId],
     );
-    if (o.isNotEmpty && mounted) setState(() => _order = o.first);
+    if (o.isNotEmpty && mounted) {
+      final order = o.first;
+      final timerStart = order['timer_start'] as String?;
+      Duration elapsed = Duration.zero;
+      bool running = false;
+      if (timerStart != null) {
+        elapsed = DateTime.now().difference(DateTime.parse(timerStart));
+        running = true;
+      }
+      setState(() {
+        _order = order;
+        _elapsed = elapsed;
+        _timerRunning = running;
+      });
+      if (running && _ticker == null) _startTick();
+    }
+  }
+
+  void _startTick() {
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _elapsed += const Duration(seconds: 1));
+    });
+  }
+
+  Future<void> _toggleTimer() async {
+    final db = await DatabaseHelper.instance.database;
+    if (_timerRunning) {
+      // Stop — clear timer_start
+      _ticker?.cancel();
+      _ticker = null;
+      await db.update(
+        'work_orders',
+        {'timer_start': null},
+        where: 'id=?',
+        whereArgs: [widget.workOrderId],
+      );
+      if (mounted) setState(() => _timerRunning = false);
+    } else {
+      // Start — set timer_start to (now - elapsed) so restoring keeps total
+      final startAt = DateTime.now().subtract(_elapsed).toIso8601String();
+      await db.update(
+        'work_orders',
+        {'timer_start': startAt},
+        where: 'id=?',
+        whereArgs: [widget.workOrderId],
+      );
+      if (mounted) {
+        setState(() => _timerRunning = true);
+        _startTick();
+      }
+    }
+  }
+
+  Future<void> _resetTimer() async {
+    _ticker?.cancel();
+    _ticker = null;
+    final db = await DatabaseHelper.instance.database;
+    await db.update(
+      'work_orders',
+      {'timer_start': null},
+      where: 'id=?',
+      whereArgs: [widget.workOrderId],
+    );
+    if (mounted) {
+      setState(() {
+        _elapsed = Duration.zero;
+        _timerRunning = false;
+      });
+    }
+  }
+
+  String _formatElapsed() {
+    final h = _elapsed.inHours.toString().padLeft(2, '0');
+    final m = (_elapsed.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (_elapsed.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 
   Future<void> _updateStatus(String status) async {
@@ -416,6 +502,7 @@ class _WorkOrderDetailScreenState extends State<WorkOrderDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Details card ──────────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -469,6 +556,87 @@ class _WorkOrderDetailScreenState extends State<WorkOrderDetailScreen> {
               ),
             ),
             const SizedBox(height: 16),
+
+            // ── Persistent Timer card ─────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isDark ? AppTheme.darkCard : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isDark ? AppTheme.darkBorder : const Color(0xFFE5E7EB),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'WORK TIMER',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF6B7280),
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: Text(
+                      _formatElapsed(),
+                      style: GoogleFonts.inter(
+                        fontSize: 48,
+                        fontWeight: FontWeight.w700,
+                        color: _timerRunning
+                            ? AppTheme.primaryBlue
+                            : (isDark ? Colors.white : const Color(0xFF111827)),
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _toggleTimer,
+                          icon: Icon(
+                            _timerRunning ? Icons.stop : Icons.play_arrow,
+                          ),
+                          label: Text(_timerRunning ? 'Stop' : 'Start'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _timerRunning
+                                ? AppTheme.accentRed
+                                : AppTheme.primaryBlue,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _resetTimer,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 12,
+                            horizontal: 16,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: const Text('Reset'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ── Status update ─────────────────────────────────────────────
             Text(
               'UPDATE STATUS',
               style: GoogleFonts.inter(

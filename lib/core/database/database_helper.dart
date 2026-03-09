@@ -16,7 +16,18 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    return await openDatabase(
+      path,
+      version: 2,
+      onCreate: _createDB,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(
+            'ALTER TABLE work_orders ADD COLUMN timer_start TEXT',
+          );
+        }
+      },
+    );
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -117,6 +128,7 @@ class DatabaseHelper {
         deadline TEXT,
         created_by INTEGER,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        timer_start TEXT,
         FOREIGN KEY (machine_id) REFERENCES machines(id),
         FOREIGN KEY (assigned_to) REFERENCES employees(id)
       )
