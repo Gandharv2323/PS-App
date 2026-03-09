@@ -244,12 +244,14 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
     // 1. Get local context from offline database
     final localContext = await _queryLiveData(message);
 
-    // 2. Read Gemini API key
+    // 2. Read Gemini API key with hardcoded fallback
     final prefs = await SharedPreferences.getInstance();
-    final apiKey = prefs.getString('gemini_api_key');
+    final apiKey =
+        prefs.getString('gemini_api_key') ??
+        'AIzaSyA3pqIwqEj4M5Qf7hxAYuwKATB_LwMqxeI';
 
-    // 3. Fallback to raw offline context if no API key
-    if (apiKey == null || apiKey.trim().isEmpty) {
+    // 3. Fallback to raw offline context if API key is empty (won't happen with our fallback, but good to check)
+    if (apiKey.trim().isEmpty) {
       return localContext;
     }
 
