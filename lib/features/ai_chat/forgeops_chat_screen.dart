@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/database/database_helper.dart';
 import '../../core/theme/app_theme.dart';
 
@@ -226,7 +228,7 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
     });
     _scrollToBottom();
 
-    _queryLiveData(text).then((response) {
+    _processFullQuery(text).then((response) {
       if (!mounted) return;
       setState(() {
         _messages.add(
@@ -236,6 +238,48 @@ class _ForgeOpsChatScreenState extends State<ForgeOpsChatScreen> {
       });
       _scrollToBottom();
     });
+  }
+
+  Future<String> _processFullQuery(String message) async {
+    // 1. Get local context from offline database
+    final localContext = await _queryLiveData(message);
+
+    // 2. Read Gemini API key
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString('gemini_api_key');
+
+    // 3. Fallback to raw offline context if no API key
+    if (apiKey == null || apiKey.trim().isEmpty) {
+      return localContext;
+    }
+
+    // 4. Hybrid AI: Pass local SQL context tightly into Gemini
+    try {
+      final model = GenerativeModel(
+        model: 'gemini-1.5-flash',
+        apiKey: apiKey.trim(),
+      );
+
+      final prompt =
+          '''
+You are ForgeOps AI, a premium industrial manufacturing factory assistant.
+Answer the user's query exactly, clearly, and conversationally.
+You MUST base your answer strictly on the following Local Database Context below.
+If the context says no records were found or provides an error, politely inform the user.
+Keep it strictly professional and concise.
+
+User Query: $message
+
+Local Database Context:
+$localContext
+''';
+
+      final response = await model.generateContent([Content.text(prompt)]);
+      return response.text ?? localContext;
+    } catch (e) {
+      debugPrint('Gemini API Error: $e');
+      return "⚠️ **AI Generation Failed** (Network or API issue). Displaying raw local data:\n\n$localContext";
+    }
   }
 
   void _scrollToBottom() {

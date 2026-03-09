@@ -5,9 +5,50 @@ import 'package:provider/provider.dart';
 import '../../core/providers/session_provider.dart';
 import '../../core/providers/theme_provider.dart';
 import '../../core/theme/app_theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsHubScreen extends StatelessWidget {
   const SettingsHubScreen({super.key});
+
+  Future<void> _showApiKeyDialog(BuildContext context) async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentKey = prefs.getString('gemini_api_key') ?? '';
+    final ctrl = TextEditingController(text: currentKey);
+
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Gemini API Key'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+            hintText: 'Enter AI Studio API Key',
+            border: OutlineInputBorder(),
+          ),
+          obscureText: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await prefs.setString('gemini_api_key', ctrl.text.trim());
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('API Key saved successfully.')),
+                );
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -95,6 +136,20 @@ class SettingsHubScreen extends StatelessWidget {
                 ),
               ),
             ], isDark),
+
+            // AI Integration
+            if (isAdmin) ...[
+              const SizedBox(height: 16),
+              _SettingSection('AI INTEGRATION', [
+                _SettingTile(
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'Gemini API Key',
+                  subtitle: 'Configure Hybrid AI Chat context',
+                  color: const Color(0xFF0F9D58),
+                  onTap: () => _showApiKeyDialog(context),
+                ),
+              ], isDark),
+            ],
 
             // Admin settings
             if (isAdmin) ...[
